@@ -23,7 +23,7 @@ typedef struct _CryptFs
     struct crypt_params_plain       params;
 } CryptFs;
 
-CryptFs*    cryptfs_init            (const char* device, const char* mountDir);
+CryptFs*    cryptfs_init            (const char* device, const char* mountPoint);
 bool        cryptfs_set_passwd      (CryptFs* fs, const unsigned char* passwd, int passwdLen);
 bool        cryptfs_is_format       (CryptFs* fs);
 bool        cryptfs_format          (CryptFs* fs);

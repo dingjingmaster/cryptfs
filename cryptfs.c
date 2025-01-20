@@ -13,6 +13,9 @@
 
 
 static char* read_line (FILE* fr);
+static void save_config (CryptFs* fs);
+static void parse_config (CryptFs* fs);
+static void format_path (char* filePath);
 
 
 CryptFs* cryptfs_init(const char* device, const char* mountPoint)
@@ -31,6 +34,7 @@ CryptFs* cryptfs_init(const char* device, const char* mountPoint)
         cryptfs_destroy(&fs);
         return NULL;
     }
+    format_path(fs->deviceName);
 
     fs->mountPoint = g_strdup(mountPoint);
     if (!fs->mountPoint) {
@@ -38,6 +42,7 @@ CryptFs* cryptfs_init(const char* device, const char* mountPoint)
         cryptfs_destroy(&fs);
         return NULL;
     }
+    format_path(fs->deviceName);
 
     // todo:// 检测系统商支持的文件系统
     fs->fsType = g_strdup("ext3");
@@ -64,12 +69,7 @@ CryptFs* cryptfs_init(const char* device, const char* mountPoint)
     }
 
     // todo:// 解析配置文件
-    // 1. 配置文件版本
-    // 2. 配置文件系统类型
-    // 3. 配置文件中保存的 uuid
-    // 4. 配置文件中保存的
-
-    fs->uuid = g_strdup_printf("%08x-%08x-%08x-%08x", 111111111,111111111,111111111,111111111);
+    parse_config(fs);
 
     // uuid
     if (!fs->uuid) {
@@ -104,6 +104,8 @@ CryptFs* cryptfs_init(const char* device, const char* mountPoint)
         cryptfs_destroy(&fs);
         return NULL;
     }
+
+    save_config(fs);
 
     return fs;
 }
@@ -196,16 +198,21 @@ bool cryptfs_is_mounted(CryptFs* fs)
     bool isMounted = false;
     char* bufLine = NULL;
     FILE* f = fopen(MOUNT_INFO, "r");
+    g_return_val_if_fail(f, false);
+
     while (NULL != (bufLine = read_line(f))) {
         isMounted = ((NULL != strstr(bufLine, fs->mountPoint)) || (NULL != strstr(bufLine, fs->decDevice)));
         if (isMounted) { break; }
-        free(bufLine);
-        bufLine = NULL;
+        if (bufLine) {
+            free(bufLine);
+            bufLine = NULL;
+        }
     }
     fclose(f);
 
     if (bufLine) {
         free(bufLine);
+        bufLine = NULL;
     }
 
     return isMounted;
@@ -215,14 +222,14 @@ bool cryptfs_unmount(CryptFs* fs)
 {
     g_return_val_if_fail(fs, false);
 
-    int times = 10;
+    int times = 1000;
 
-    while (times --) {
+    do {
         umount(fs->mountPoint);
         umount(fs->decDevice);
+        crypt_deactivate(fs->device, fs->uuid);
     }
-
-    crypt_deactivate(fs->device, fs->uuid);
+    while (times-- && cryptfs_is_mounted(fs));
 
     return !cryptfs_is_mounted(fs);
 }
@@ -289,7 +296,7 @@ static char* read_line (FILE* fr)
         printf("fopen error\n");
         return NULL;
     }
-    int64_t cur = ftell(fr);
+    const int64_t cur = ftell(fr);
 
     char* res = NULL;
     int64_t lineLen = 0;
@@ -297,7 +304,7 @@ static char* read_line (FILE* fr)
     char buf[10] = {0};
     while (true) {
         memset(buf, 0, sizeof(buf));
-        int size = fread(buf, 1, sizeof(buf) - 1, fr);
+        const int size = fread(buf, 1, sizeof(buf) - 1, fr);
         if (size <= 0) {
             break;
         }
@@ -329,4 +336,71 @@ static char* read_line (FILE* fr)
     }
 
     return res;
+}
+
+static void format_path (char* filePath)
+{
+    if (!filePath) { return; }
+
+    int i = 0;
+    const int fLen = (int) strlen (filePath);
+    for (i = 0; filePath[i]; ++i) {
+        while (filePath[i] && '/' == filePath[i] && '/' == filePath[i + 1]) {
+            for (int j = i; filePath[j] || j < fLen; filePath[j] = filePath[j + 1], ++j);
+        }
+    }
+
+    if ((i - 1 >= 0) && filePath[i - 1] == '/') {
+        filePath[i - 1] = '\0';
+    }
+}
+
+static void save_config (CryptFs* fs)
+{
+    g_return_if_fail(fs);
+
+#define SAVE_CONFIG(field, val) \
+{ \
+    char* lineBuf = g_strdup_printf("%s=%s\n", field, val); \
+    if (lineBuf) { \
+        fwrite(lineBuf, 1, strlen(lineBuf), fw); \
+        g_free (lineBuf); \
+    } \
+}
+
+    char* configFile = g_strdup_printf("%s.config", fs->deviceName);
+    if (configFile) {
+        FILE* fw = fopen(configFile, "w+");
+        if (fw) {
+            SAVE_CONFIG("uuid", fs->uuid);
+            fflush(fw);
+            fclose(fw);
+        }
+        g_free(configFile);
+        configFile = NULL;
+    }
+}
+
+static void parse_config (CryptFs* fs)
+{
+    g_return_if_fail(fs);
+
+    char* configFile = g_strdup_printf("%s.config", fs->deviceName);
+    if (configFile) {
+        FILE* fr = fopen(configFile, "r");
+        if (fr) {
+            char* lineBuf = NULL;
+            while (NULL != (lineBuf = read_line(fr))) {
+                if (g_str_has_prefix(lineBuf, "uuid=")) {
+                    if (fs->uuid) { free(fs->uuid); fs->uuid = NULL; }
+                    fs->uuid = g_strdup(lineBuf + strlen("uuid="));
+                }
+                if (lineBuf) { g_free(lineBuf); lineBuf = NULL; }
+            }
+            fclose(fr);
+            if (lineBuf) { g_free(lineBuf); lineBuf = NULL; }
+        }
+        g_free(configFile);
+        configFile = NULL;
+    }
 }
